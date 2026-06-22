@@ -30,9 +30,18 @@
 #   --container         <name>          default: billing-exports
 #   --export-name       <name>          default: lumiture-daily-actual-cost
 #   --with-focus                        also create a FOCUS-format export (daily-focus-cost)
+#   --with-usage                        also create+assign the usage custom role (VM + Monitor
+#                                       metrics read) for rightsizing/usage data — billing alone
+#                                       does not need it; opt in for full FinOps
 #   --lumiture-app-id   <GUID>          default: prod LumiTure multi-tenant SP app id
 #   --lumiture-api      <https://api.lumiture.ai>   for auto-submit; omit to skip submit
 #   --lumiture-jwt      <token>         provide to auto-submit; omit to finish in the wizard
+#   --event-trigger-url <url>           LumiTure billing event-trigger URL (the Azure Function
+#                                       webhook). Required for billing DATA to flow. If omitted,
+#                                       fetched from the API when --lumiture-api + --lumiture-jwt
+#                                       are given. Env-specific (NOT a public constant).
+#   --event-sub-name    <name>          Event Grid subscription name (default: lumiture-billing-export)
+#   --skip-event-subscription           do not create the Event Grid subscription
 #   --discover-only     run discovery + report only; no grants, no export, no submit
 #   --skip-export       do the grants but do not create the Cost Management export
 #   --dry-run           print commands without executing
@@ -47,11 +56,11 @@ set -euo pipefail
 # in-product wizard), analogous to the GCP read-only service-account email.
 # -----------------------------------------------------------------------------
 
-# TODO(fill-in): replace with LumiTure's PROD Azure multi-tenant SP App (client) ID.
-# Pull from the in-product Azure wizard, or from prod config (the same client id
-# used to build the admin-consent URL). Kept as a placeholder so the POC stays
-# free of any assumed credential.
-readonly LUMITURE_APP_ID_PROD="REPLACE_WITH_LUMITURE_AZURE_APP_ID"
+# LumiTure's PROD Azure multi-tenant SP App (client) ID — public by design (it's
+# AZURE_LUMITURE_SP_CLIENT_ID in .env.prod, also the Microsoft sign-in client id;
+# shown in the in-product wizard). NOT a secret. Override with --lumiture-app-id
+# for non-prod (sandbox/dev uses 99e6a4c9-8c5b-4481-bd9b-522cd30ec3c3).
+readonly LUMITURE_APP_ID_PROD="c871cf6f-dd8d-487a-a908-a66245655b0e"
 readonly LUMITURE_API_PROD="https://api.lumiture.ai"
 readonly LUMITURE_WIZARD_URL="https://app.lumiture.ai/authorization/billing-data-integration/azure"
 readonly ROLE_COST_READER="Cost Management Reader"
@@ -80,6 +89,10 @@ LOCATION="eastasia"
 CONTAINER="billing-exports"
 EXPORT_NAME="lumiture-daily-actual-cost"
 WITH_FOCUS=0
+WITH_USAGE=0
+EVENT_TRIGGER_URL=""
+EVENT_SUB_NAME="lumiture-billing-export"
+SKIP_EVENT_SUBSCRIPTION=0
 LUMITURE_APP_ID=""
 LUMITURE_API=""
 LUMITURE_JWT=""
@@ -97,6 +110,10 @@ while [[ $# -gt 0 ]]; do
     --container) CONTAINER="$2"; shift 2 ;;
     --export-name) EXPORT_NAME="$2"; shift 2 ;;
     --with-focus) WITH_FOCUS=1; shift ;;
+    --with-usage) WITH_USAGE=1; shift ;;
+    --event-trigger-url) EVENT_TRIGGER_URL="$2"; shift 2 ;;
+    --event-sub-name) EVENT_SUB_NAME="$2"; shift 2 ;;
+    --skip-event-subscription) SKIP_EVENT_SUBSCRIPTION=1; shift ;;
     --lumiture-app-id) LUMITURE_APP_ID="$2"; shift 2 ;;
     --lumiture-api) LUMITURE_API="$2"; shift 2 ;;
     --lumiture-jwt) LUMITURE_JWT="$2"; shift 2 ;;
@@ -265,8 +282,13 @@ validate_grants() {
 
 create_export() {
   local name="$1" export_type="$2" subdir="$3"
-  log "Phase 2.5 — Creating ${export_type} export '${name}' → ${STORAGE_ACCOUNT}/${CONTAINER}/${TENANT_ID}/${SUBSCRIPTION_ID}…"
-  run az costmanagement export create \
+  # az costmanagement export create REQUIRES --recurrence-period when --recurrence is set,
+  # and the start date must be in the future. GNU date (Cloud Shell) first, BSD/macOS fallback.
+  local from_date to_date
+  from_date=$(date -u -d '+1 day' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -v+1d +%Y-%m-%dT00:00:00Z)
+  to_date=$(date -u -d '+5 years' +%Y-%m-%dT00:00:00Z 2>/dev/null || date -u -v+5y +%Y-%m-%dT00:00:00Z)
+  log "Phase 2.5 — Creating ${export_type} export '${name}' → ${STORAGE_ACCOUNT}/${CONTAINER}/${TENANT_ID}/${SUBSCRIPTION_ID}/${subdir} (daily ${from_date}…${to_date})…"
+  if run az costmanagement export create \
     --name "${name}" \
     --type "${export_type}" \
     --scope "subscriptions/${SUBSCRIPTION_ID}" \
@@ -275,10 +297,122 @@ create_export() {
     --storage-directory "${TENANT_ID}/${SUBSCRIPTION_ID}/${subdir}" \
     --timeframe MonthToDate \
     --recurrence Daily \
+    --recurrence-period from="${from_date}" to="${to_date}" \
     --schedule-status Active \
-    -o none 2>/dev/null \
-    || warn "Export create returned non-zero — check 'az costmanagement export show --name ${name}'. (FOCUS export may need a newer az / portal step.)"
-  ok "Export '${name}' configured (first run lands within ~24h)"
+    -o none; then
+    ok "Export '${name}' created (first Azure run lands in ~24h)"
+    log "  NOTE: the export alone doesn't deliver data — LumiTure ingests from its own blob"
+    log "  via the event trigger. Phase 2.7 wires that (needs --event-trigger-url or a JWT)."
+  else
+    warn "Export '${name}' create failed — see the az error above. (FOCUS export may need a newer az / portal step.)"
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# Phase 2.6 — Usage custom role (opt-in: --with-usage)
+# Usage/rightsizing data needs the SP to read VMs + Azure Monitor metrics, which
+# Cost Management Reader does NOT cover. LumiTure defines a custom role for this
+# (backend: AzureAuthorizationService.get_usage_custom_role); we create + assign it.
+# The role name is cosmetic for the customer; the LumiTure usage-check validates by
+# listing VMs, so what matters is the action set below matching the backend.
+# -----------------------------------------------------------------------------
+
+grant_usage_role() {
+  local role_name="LumiTure FinOps Reader"
+  local scope="/subscriptions/${SUBSCRIPTION_ID}"
+  local role_def
+  role_def=$(cat <<JSON
+{
+  "Name": "${role_name}",
+  "IsCustom": true,
+  "Description": "LumiTure FinOps usage-metrics reader (VM inventory + Azure Monitor metrics).",
+  "Actions": [
+    "Microsoft.Compute/virtualMachines/read",
+    "Microsoft.Compute/virtualMachines/instanceView/read",
+    "Microsoft.Compute/skus/read",
+    "Microsoft.Insights/Metrics/Read",
+    "Microsoft.Resources/subscriptions/read",
+    "Microsoft.Resources/subscriptions/resourceGroups/read"
+  ],
+  "AssignableScopes": ["${scope}"]
+}
+JSON
+)
+  log "Phase 2.6 — Ensuring custom usage role '${role_name}' on subscription…"
+  if az role definition list --name "${role_name}" --scope "${scope}" --query "[0].roleName" -o tsv --only-show-errors 2>/dev/null | grep -q .; then
+    run az role definition update --role-definition "${role_def}" -o none || warn "Usage role update failed — see error above"
+  else
+    run az role definition create --role-definition "${role_def}" -o none || { warn "Usage role create failed — see error above"; return 0; }
+  fi
+
+  log "Phase 2.6 — Assigning '${role_name}' to LumiTure SP (custom roles can take ~1m to propagate)…"
+  local i
+  for i in 1 2 3 4 5 6; do
+    if run az role assignment create \
+        --assignee-object-id "${SP_OBJECT_ID}" \
+        --assignee-principal-type ServicePrincipal \
+        --role "${role_name}" \
+        --scope "${scope}" \
+        -o none 2>/dev/null; then
+      ok "Usage custom role assigned to LumiTure SP"
+      return 0
+    fi
+    [[ "${DRY_RUN}" -eq 1 ]] && { ok "DRY-RUN: usage role assignment"; return 0; }
+    warn "  role not yet propagated (attempt ${i}/6) — retrying in 15s…"
+    sleep 15
+  done
+  warn "Usage role assignment did not succeed after retries — re-run, or assign '${role_name}' to the SP in the portal."
+}
+
+# -----------------------------------------------------------------------------
+# Phase 2.7 — Event Grid subscription (billing DATA path)
+# The customer-side export lands in the customer's storage; LumiTure ingests it
+# into its OWN blob via an Azure Function (AZURE_BILLING_EVENT_TRIGGER_URL). That
+# function is invoked by an Event Grid subscription on the storage account that
+# fires on BlobCreated → webhook. WITHOUT this, billing cost data never reaches
+# LumiTure. Params mirror the in-product wizard's "SetUp Data Access — Step 2".
+# -----------------------------------------------------------------------------
+
+resolve_event_trigger_url() {
+  [[ -n "${EVENT_TRIGGER_URL}" ]] && { printf '%s' "${EVENT_TRIGGER_URL}"; return 0; }
+  # Fetch from the LumiTure API if we have a token (env-specific Function URL).
+  if [[ -n "${LUMITURE_API}" && -n "${LUMITURE_JWT}" ]]; then
+    curl -s -H "Authorization: Bearer ${LUMITURE_JWT}" \
+      "${LUMITURE_API}/platforms/azure/authorization/event-trigger-url/" \
+      | jq -r '.data.url // empty' 2>/dev/null
+  fi
+}
+
+setup_event_subscription() {
+  local url
+  url=$(resolve_event_trigger_url)
+  if [[ -z "${url}" ]]; then
+    warn "Phase 2.7 — no event-trigger URL (pass --event-trigger-url, or --lumiture-api + --lumiture-jwt to fetch it)."
+    warn "  Skipping the Event Grid subscription — billing DATA will NOT flow until it's created."
+    return 0
+  fi
+
+  # Provider registration is async — MUST complete before event-subscription create,
+  # or the create fails with "Microsoft.EventGrid is not registered". --wait blocks
+  # until Registered (no-op/fast if already registered).
+  log "Phase 2.7 — Registering Microsoft.EventGrid provider (waiting for completion, can take ~1-2 min)…"
+  run az provider register --namespace Microsoft.EventGrid --wait -o none
+
+  log "Phase 2.7 — Creating Event Grid subscription '${EVENT_SUB_NAME}' (BlobCreated → LumiTure webhook) on ${STORAGE_ACCOUNT}…"
+  if run az eventgrid event-subscription create \
+      --name "${EVENT_SUB_NAME}" \
+      --source-resource-id "${STORAGE_ACCOUNT_ID}" \
+      --included-event-types Microsoft.Storage.BlobCreated \
+      --endpoint-type webhook \
+      --endpoint "${url}" \
+      -o none; then
+    ok "Event subscription created → billing data flows to LumiTure on the next export run"
+  else
+    warn "Event subscription create failed — see the az error above."
+    warn "  The endpoint must be reachable and pass Event Grid's validation handshake."
+    warn "  (It will NOT validate against a placeholder URL such as sandbox's"
+    warn "  placeholder-sandbox.azurewebsites.net — use a real env: dev/staging/prod.)"
+  fi
 }
 
 # -----------------------------------------------------------------------------
@@ -353,9 +487,13 @@ main() {
   if [[ "${SKIP_EXPORT}" -eq 0 ]]; then
     create_export "${EXPORT_NAME}" "ActualCost" "daily-actual-cost"
     [[ "${WITH_FOCUS}" -eq 1 ]] && create_export "lumiture-daily-focus-cost" "FocusCost" "daily-focus-cost"
+    # The export only matters if its blobs reach LumiTure — wire the Event Grid subscription.
+    [[ "${SKIP_EVENT_SUBSCRIPTION}" -eq 0 ]] && setup_event_subscription
   else
     log "--skip-export set — grants applied, no Cost Management export created"
   fi
+
+  [[ "${WITH_USAGE}" -eq 1 ]] && grant_usage_role
 
   emit_form_values
   submit_to_lumiture
