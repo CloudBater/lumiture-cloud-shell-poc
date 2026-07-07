@@ -90,8 +90,11 @@ module blobReader 'role-storage.bicep' = {
   dependsOn: [ storage ]
 }
 
-// Daily ActualCost export at subscription scope
-resource export 'Microsoft.CostManagement/exports@2023-08-01' = {
+// Daily ActualCost export at subscription scope. api 2025-03-01: first stable
+// version with the modern delivery properties — overwrite (each run replaces the
+// previous month-to-date snapshot instead of accumulating GUID-named files),
+// partitioned + gzip, matching what the Azure portal creates today.
+resource export 'Microsoft.CostManagement/exports@2025-03-01' = {
   name: exportName
   properties: {
     schedule: {
@@ -103,6 +106,9 @@ resource export 'Microsoft.CostManagement/exports@2023-08-01' = {
       }
     }
     format: 'Csv'
+    partitionData: true
+    dataOverwriteBehavior: 'OverwritePreviousReport'
+    compressionMode: 'gzip'
     deliveryInfo: {
       destination: {
         resourceId: storage.outputs.storageAccountId

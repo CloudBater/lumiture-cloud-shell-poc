@@ -358,21 +358,26 @@ create_export() {
 
   # Create via the ARM REST API, not the `az costmanagement` extension: the extension
   # prompts to self-install and rejects FOCUS (only Usage/ActualCost/AmortizedCost).
-  # FOCUS is accepted only on 2023-07-01-preview (all stable versions reject it, and
-  # reject a dataVersion property); ActualCost/AmortizedCost use the stable 2023-11-01.
+  # api 2025-03-01 is the first stable version that accepts FocusCost AND the modern
+  # delivery properties; older versions (2023-11-01 and earlier) silently reject
+  # dataOverwriteBehavior, leaving CreateNewReport semantics — a new GUID-named
+  # cumulative file EVERY run, accumulating in the period folder forever.
   local api_version dataset
+  api_version="2025-03-01"
   if [[ "${export_type}" == "FocusCost" ]]; then
-    api_version="2023-07-01-preview"
-    dataset='"granularity": "Daily", "configuration": { "dataVersion": "1.0" }'
+    dataset='"granularity": "Daily", "configuration": { "dataVersion": "1.0r2" }'
   else
-    api_version="2023-11-01"
     dataset='"granularity": "Daily"'
   fi
 
   log "Phase 2.5 — Creating ${export_type} export '${name}' → ${STORAGE_ACCOUNT}/${CONTAINER}/cost/${name} (daily ${from_date}…${to_date})…"
+  # Delivery properties: each run REPLACES the previous month-to-date snapshot
+  # (overwrite) instead of piling up files; partitioned + gzip matches what the Azure
+  # portal creates today. The LumiTure pipeline handles both generations, but overwrite
+  # keeps the customer's storage flat.
   local url body
   url="https://management.azure.com/subscriptions/${SUBSCRIPTION_ID}/providers/Microsoft.CostManagement/exports/${name}?api-version=${api_version}"
-  body="{\"properties\":{\"schedule\":{\"status\":\"Active\",\"recurrence\":\"Daily\",\"recurrencePeriod\":{\"from\":\"${from_date}\",\"to\":\"${to_date}\"}},\"format\":\"Csv\",\"deliveryInfo\":{\"destination\":{\"resourceId\":\"${STORAGE_ACCOUNT_ID}\",\"container\":\"${CONTAINER}\",\"rootFolderPath\":\"cost\"}},\"definition\":{\"type\":\"${export_type}\",\"timeframe\":\"MonthToDate\",\"dataSet\":{${dataset}}}}}"
+  body="{\"properties\":{\"schedule\":{\"status\":\"Active\",\"recurrence\":\"Daily\",\"recurrencePeriod\":{\"from\":\"${from_date}\",\"to\":\"${to_date}\"}},\"format\":\"Csv\",\"partitionData\":true,\"dataOverwriteBehavior\":\"OverwritePreviousReport\",\"compressionMode\":\"gzip\",\"deliveryInfo\":{\"destination\":{\"resourceId\":\"${STORAGE_ACCOUNT_ID}\",\"container\":\"${CONTAINER}\",\"rootFolderPath\":\"cost\"}},\"definition\":{\"type\":\"${export_type}\",\"timeframe\":\"MonthToDate\",\"dataSet\":{${dataset}}}}}"
   if run az rest --method PUT --url "${url}" --headers "Content-Type=application/json" --body "${body}" -o none; then
     ok "Export '${name}' created (first Azure run lands in ~24h)"
     log "  NOTE: the export alone doesn't deliver data — LumiTure ingests from its own blob"
