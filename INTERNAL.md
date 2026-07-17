@@ -1,10 +1,16 @@
-# Internal fork — LumiTure Cloud Onboarding (POC)
+# Internal fork — LumiTure Cloud Onboarding
 
-This repo is the **downstream fork** of
+`CloudBater/lumiture-cloud-onboard` is the **downstream fork** of
 [`CloudMile-Product/lumiture-cloud-onboard`](https://github.com/CloudMile-Product/lumiture-cloud-onboard).
 It mirrors upstream closely and adds internal multi-environment convenience for
 testing. Everything not listed under the delta below (bicep, the public flow) is
 upstream's — do not diverge it here.
+
+> **The two repos share a name and differ only by owner** — `CloudMile-Product` is
+> canonical, `CloudBater` is this fork. GitHub shows no "forked from" badge (this repo
+> was created standalone, not via fork), so nothing on the page distinguishes them
+> except the owner and the banner in `README.md`. Check the owner before you clone,
+> and keep that banner intact.
 
 > **This fork is a PUBLIC repo**, despite being internal-facing. The `--env` block
 > below therefore publishes the dev/staging/sandbox/prod function hostnames to

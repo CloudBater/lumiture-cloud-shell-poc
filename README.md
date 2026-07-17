@@ -1,4 +1,17 @@
-# LumiTure Cloud Onboarding
+# LumiTure Cloud Onboarding — internal dev fork
+
+> ### ⚠️ This is not the repo you want
+>
+> This is the **internal development fork**, and it shares its name with the real one.
+> Customers and anyone onboarding for real should use the canonical repo:
+>
+> ### 👉 **<https://github.com/CloudMile-Product/lumiture-cloud-onboard>**
+>
+> This fork adds internal multi-environment switches (`--env dev|staging|sandbox`) that
+> point the onboarding at **non-production** LumiTure endpoints. Running it against a real
+> customer would wire their billing data to the wrong environment. It also carries
+> `uninstall.sh`, which exists to tear a test subscription down and is not part of the
+> customer flow. See [`INTERNAL.md`](INTERNAL.md).
 
 > Guided, low-install, customer-driven onboarding flows that grant [LumiTure](https://app.lumiture.ai) **read-only** access to a customer's cloud **billing/cost data** — each on that cloud's own native surface, in the customer's own identity. LumiTure never sees the customer's credentials.
 

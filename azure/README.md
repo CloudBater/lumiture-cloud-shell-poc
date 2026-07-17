@@ -21,7 +21,7 @@ Because Azure Cloud Shell has no "open this git repo + tutorial" badge like Goog
 1. Open **Azure Cloud Shell**: <https://shell.azure.com> (pick **Bash**)
 2. Clone + enter:
    ```bash
-   git clone https://github.com/CloudBater/lumiture-cloud-shell-poc.git && cd lumiture-cloud-shell-poc/azure
+   git clone https://github.com/CloudBater/lumiture-cloud-onboard.git && cd lumiture-cloud-onboard/azure
    ```
 3. Follow [`tutorial.md`](tutorial.md) (or run the wrapper directly — see below)
 
