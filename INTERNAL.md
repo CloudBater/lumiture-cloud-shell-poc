@@ -1,18 +1,21 @@
 # Internal fork — LumiTure Cloud Onboarding (POC)
 
-This repo is the **internal downstream fork** of the public
+This repo is the **downstream fork** of
 [`CloudMile-Product/lumiture-cloud-onboard`](https://github.com/CloudMile-Product/lumiture-cloud-onboard).
-It mirrors upstream **verbatim** and adds exactly one thing: internal
-multi-environment convenience for testing. Everything else (docs, bicep, the public
-flow) is upstream's — do not diverge it here.
+It mirrors upstream closely and adds internal multi-environment convenience for
+testing. Everything not listed under the delta below (bicep, the public flow) is
+upstream's — do not diverge it here.
 
-> The tutorial/README clone URLs point at the public repo (they're upstream's).
-> To get the `--env` convenience below, clone **this** fork's URL
-> (`CloudBater/lumiture-cloud-shell-poc`), not the URL printed in the docs.
+> **This fork is a PUBLIC repo**, despite being internal-facing. The `--env` block
+> below therefore publishes the dev/staging/sandbox/prod function hostnames to
+> anyone. Those functions are `AuthLevel.ANONYMOUS` with no `?code=`, so the
+> hostname is their only obscurity — and it is not obscure. Upstream deliberately
+> carries no event-trigger URL; that protection is void as long as this fork is
+> public and carries all four. Treat the hostnames as disclosed.
 
-## What this fork adds (the only delta vs upstream)
+## What this fork adds (the delta vs upstream)
 
-On `azure/lumiture-azure-onboard.sh` (+ `ENV` passthrough in `azure/onboard-wrapper.sh`):
+On `azure/init.sh` (+ `ENV` passthrough in `azure/onboard-wrapper.sh`):
 
 - **`--env dev|staging|sandbox|prod`** (default `prod`) — resolves the LumiTure
   app-id + billing event-trigger URL for that environment, so internal testing skips
@@ -20,8 +23,12 @@ On `azure/lumiture-azure-onboard.sh` (+ `ENV` passthrough in `azure/onboard-wrap
 - **Auto-detect** the subscription (when exactly one is enabled) + default the export
   storage account/RG — so a bare `--env dev` run needs no other input.
 
-These carry internal env hostnames, which is why they live here and **never** upstream.
-If a function app is recreated, refresh the hostnames in the `--env` block.
+These carry internal env hostnames and **never** go upstream — that keeps the
+customer-facing repo clean regardless of this fork's visibility. If a function app is
+recreated, refresh the hostnames in the `--env` block.
+
+On `azure/README.md` + `azure/tutorial.md`: the `git clone` URL points at **this**
+fork, not upstream — cloning upstream gets you the script without `--env`.
 
 ## Workflow — develop upstream, merge down (never push up)
 
@@ -40,6 +47,8 @@ git merge upstream/main            # or the active upstream branch
 # patch upstream — that's what keeps the customer-facing repo clean.
 ```
 
-Merges stay clean because the only files this fork changes are
-`azure/lumiture-azure-onboard.sh` and `azure/onboard-wrapper.sh`; conflicts only
-arise if upstream edits the exact lines the `--env` patch touches.
+The files this fork changes are `azure/init.sh`, `azure/onboard-wrapper.sh`, and the
+clone URL in `azure/README.md` + `azure/tutorial.md`; conflicts only arise if upstream
+edits those exact lines. The doc clone URLs are the likeliest to conflict — upstream
+owns those files otherwise, so resolve in favour of upstream's prose and keep only the
+fork's clone URL.

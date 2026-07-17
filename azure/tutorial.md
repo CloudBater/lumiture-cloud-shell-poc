@@ -25,7 +25,7 @@ Open Azure Cloud Shell from the portal (the `>_` icon, top bar) or <https://port
 Cloud Shell already has `az`, `jq`, and `git`, and you're logged in automatically. Clone this repo:
 
 ```bash
-git clone https://github.com/CloudMile-Product/lumiture-cloud-onboard.git && cd lumiture-cloud-onboard/azure
+git clone https://github.com/CloudBater/lumiture-cloud-shell-poc.git && cd lumiture-cloud-shell-poc/azure
 ```
 
 Confirm you're on the right account:
